@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>설문 결과 대시보드</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;600;700&family=Space+Mono&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/static/style.css"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <nav class="navbar">
+    <div class="nav-brand">📊 관리자 대시보드</div>
+    <div class="nav-actions">
+      <a href="/" class="btn btn-ghost btn-sm">설문 페이지</a>
+      <a href="/admin/logout" class="btn btn-ghost btn-sm">로그아웃</a>
+    </div>
+  </nav>
+
+  <main class="container">
+    <div class="results-header">
+      <h2>설문조사 결과</h2>
+      <div style="display:flex;gap:.75rem;align-items:center;">
+        <span id="totalCount" class="stat-badge">로딩 중...</span>
+        <button onclick="loadResults()" class="btn btn-ghost btn-sm">🔄 새로고침</button>
+        <a href="/admin/disconnect-google" class="btn btn-ghost btn-sm"
+          onclick="return confirm('Google 연동을 해제하시겠습니까?')">연동 해제</a>
+      </div>
+    </div>
+
+    <div class="stats-grid">
+      <div class="stat-card"><div class="stat-value" id="s-total">-</div><div class="stat-label">총 응답</div></div>
+      <div class="stat-card"><div class="stat-value" id="s-avg">-</div><div class="stat-label">평균 만족도</div></div>
+      <div class="stat-card"><div class="stat-value" id="s-rec">-</div><div class="stat-label">추천 비율</div></div>
+    </div>
+
+    <div class="charts-grid">
+      <div class="chart-card"><h3>만족도 분포</h3><canvas id="chartSat"></canvas></div>
+      <div class="chart-card"><h3>나이대 분포</h3><canvas id="chartAge"></canvas></div>
+      <div class="chart-card"><h3>추천 여부</h3><canvas id="chartRec"></canvas></div>
+      <div class="chart-card chart-wide"><h3>일별 응답 수</h3><canvas id="chartDaily"></canvas></div>
+    </div>
+
+    <div class="opinions-card">
+      <h3>💬 최근 의견</h3>
+      <div id="opinionsList"></div>
+    </div>
+  </main>
+
+  <script>
+    const charts = {};
+
+    async function loadResults() {
+      const res = await fetch("/api/results");
+      const d = await res.json();
+      if (d.error) { alert(d.error); return; }
+
+      // 요약
+      document.getElementById("totalCount").textContent = `총 ${d.total}건`;
+      document.getElementById("s-total").textContent = d.total;
+      document.getElementById("s-avg").textContent = d.total ? d.satisfaction_avg + " / 5" : "-";
+      const recTotal = d.recommend_ratio["예"] + d.recommend_ratio["아니오"];
+      document.getElementById("s-rec").textContent =
+        recTotal ? Math.round(d.recommend_ratio["예"] / recTotal * 100) + "%" : "-";
+
+      // 차트 재생성 헬퍼
+      const remake = (id, config) => {
+        if (charts[id]) charts[id].destroy();
+        charts[id] = new Chart(document.getElementById(id), config);
+      };
+
+      const font = { family: "'Noto Sans KR', sans-serif", size: 13 };
+
+      // 만족도 막대
+      remake("chartSat", {
+        type: "bar",
+        data: {
+          labels: ["★1","★2","★3","★4","★5"],
+          datasets: [{
+            label: "응답 수",
+            data: [1,2,3,4,5].map(i => d.satisfaction_distribution[String(i)] || 0),
+            backgroundColor: ["#ff6b6b","#ffa94d","#ffd43b","#69db7c","#339af0"],
+            borderRadius: 8, borderSkipped: false,
+          }]
+        },
+        options: { responsive: true, plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true, ticks: { stepSize:1, font } }, x: { ticks: { font } } } }
+      });
+
+      // 나이대 도넛
+      const ageKeys = Object.keys(d.age_distribution);
+      remake("chartAge", {
+        type: "doughnut",
+        data: {
+          labels: ageKeys,
+          datasets: [{ data: ageKeys.map(k => d.age_distribution[k]),
+            backgroundColor: ["#74c0fc","#a9e34b","#ffa94d","#e599f7","#ff8787"], borderWidth: 2 }]
+        },
+        options: { responsive: true, plugins: { legend: { position: "bottom", labels: { font } } } }
+      });
+
+      // 추천 도넛
+      remake("chartRec", {
+        type: "doughnut",
+        data: {
+          labels: ["예 👍","아니오 👎"],
+          datasets: [{ data: [d.recommend_ratio["예"], d.recommend_ratio["아니오"]],
+            backgroundColor: ["#69db7c","#ff6b6b"], borderWidth: 2 }]
+        },
+        options: { responsive: true, plugins: { legend: { position: "bottom", labels: { font } } } }
+      });
+
+      // 일별 라인 차트
+      const days = Object.keys(d.daily_responses);
+      remake("chartDaily", {
+        type: "line",
+        data: {
+          labels: days,
+          datasets: [{
+            label: "응답 수", data: days.map(k => d.daily_responses[k]),
+            borderColor: "#339af0", backgroundColor: "rgba(51,154,240,0.1)",
+            fill: true, tension: 0.4, pointRadius: 5,
+          }]
+        },
+        options: { responsive: true,
+          scales: { y: { beginAtZero: true, ticks: { stepSize:1, font } }, x: { ticks: { font } } } }
+      });
+
+      // 최근 의견
+      const list = document.getElementById("opinionsList");
+      list.innerHTML = d.recent_opinions.length === 0
+        ? "<p class='no-data'>아직 의견이 없습니다.</p>"
+        : d.recent_opinions.map(o => `
+          <div class="opinion-item">
+            <div class="opinion-meta">${o.name} · ${o.timestamp}</div>
+            <div class="opinion-text">${o.opinion}</div>
+          </div>`).join("");
+    }
+
+    loadResults();
+  </script>
+</body>
+</html>
